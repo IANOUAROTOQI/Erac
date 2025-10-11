@@ -17,10 +17,11 @@ def home():
         "version": "1.0",
         "endpoints": {
             "/": "GET - Informations de l'API",
-            "/scrape": "GET - Lance le scraping ERAC complet",
+            "/scrape/france": "GET - Scraping ERAC France",
+            "/scrape/germany": "GET - Scraping ERAC Germany", 
             "/health": "GET - Status de santé"
         },
-        "description": "API pour scraper les données ERAC inbound et outbound"
+        "description": "API pour scraper les données ERAC France et Germany"
     })
 
 @app.route('/health')
@@ -32,11 +33,20 @@ def health():
         "service": "ERAC Scraper API"
     })
 
-@app.route('/scrape')
-def scrape_erac():
-    """Endpoint principal pour le scraping ERAC"""
+def scrape_erac_country(country="france"):
+    """Fonction de scraping avec credentials par pays"""
     try:
-        print("Début du scraping ERAC...")
+        print(f"Début du scraping ERAC {country.upper()}...")
+        
+        # Credentials selon le pays
+        if country.lower() == "germany":
+            login_id = os.getenv('ERAC_GERMANY_LOGIN', 'Martin.Thiel@otoqi.com')
+            password = os.getenv('ERAC_GERMANY_PASSWORD', 'Otoqi_2025')
+            print("Utilisation des credentials Germany")
+        else:
+            login_id = os.getenv('ERAC_FRANCE_LOGIN', 'ROUYOlivier1') 
+            password = os.getenv('ERAC_FRANCE_PASSWORD', 'Parkopoly1234')
+            print("Utilisation des credentials France")
         
         # Session HTTP (votre code Pipedream exact)
         session = requests.Session()
@@ -67,11 +77,11 @@ def scrape_erac():
         token = token_element['value']
         print("Token extrait avec succès")
 
-        # Étape 2: Login (votre code exact avec variables d'environnement)
-        print("Connexion en cours...")
+        # Étape 2: Login avec les bons credentials
+        print(f"Connexion {country.upper()} en cours...")
         login_payload = {
-            'LoginId': os.getenv('ERAC_LOGIN_ID', 'ROUYOlivier1'),
-            'Password': os.getenv('ERAC_PASSWORD', 'Parkopoly1234'),
+            'LoginId': login_id,
+            'Password': password,
             '__RequestVerificationToken': token,
         }
         
@@ -93,7 +103,7 @@ def scrape_erac():
             headers=login_headers
         )
         
-        print("Connexion réussie")
+        print(f"Connexion {country.upper()} réussie")
 
         # Étape 3: Terms (votre code exact)
         print("Acceptation des conditions...")
@@ -330,6 +340,11 @@ def scrape_erac():
         
         # Votre structure de données Pipedream + informations supplémentaires
         combined_data = {
+            'country': country.upper(),
+            'credentials': {
+                'login_id': login_id,
+                'used_env_vars': country.lower() == 'germany'
+            },
             'inbound': data_inbound['data'],
             'outbound': data_outbound['data'],
             'timestamp': datetime.utcnow().isoformat(),
@@ -339,48 +354,69 @@ def scrape_erac():
             'records_total_outbound': data_outbound.get('recordsTotal', 0)
         }
         
-        print(f"Scraping réussi: {combined_data['total_outbound']} outbound, {combined_data['total_inbound']} inbound")
+        print(f"Scraping {country.upper()} réussi: {combined_data['total_outbound']} outbound, {combined_data['total_inbound']} inbound")
         
-        # Réponse JSON
+        return combined_data
+        
+    except Exception as e:
+        print(f"Erreur lors du scraping {country.upper()}: {str(e)}")
+        raise
+
+@app.route('/scrape/france')
+def scrape_france():
+    """Endpoint pour le scraping ERAC France"""
+    try:
+        data = scrape_erac_country("france")
+        
         return jsonify({
             'success': True,
-            'data': combined_data,
-            'message': f"Scraping réussi: {combined_data['total_outbound']} véhicules outbound, {combined_data['total_inbound']} véhicules inbound"
+            'data': data,
+            'message': f"Scraping FRANCE réussi: {data['total_outbound']} véhicules outbound, {data['total_inbound']} véhicules inbound"
         })
         
     except Exception as e:
-        print(f"Erreur lors du scraping: {str(e)}")
-        
         return jsonify({
             'success': False,
             'error': str(e),
+            'country': 'FRANCE',
             'timestamp': datetime.utcnow().isoformat(),
-            'message': 'Erreur lors du scraping ERAC'
+            'message': 'Erreur lors du scraping ERAC France'
+        }), 500
+
+@app.route('/scrape/germany')
+def scrape_germany():
+    """Endpoint pour le scraping ERAC Germany"""
+    try:
+        data = scrape_erac_country("germany")
+        
+        return jsonify({
+            'success': True,
+            'data': data,
+            'message': f"Scraping GERMANY réussi: {data['total_outbound']} véhicules outbound, {data['total_inbound']} véhicules inbound"
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e),
+            'country': 'GERMANY',
+            'timestamp': datetime.utcnow().isoformat(),
+            'message': 'Erreur lors du scraping ERAC Germany'
         }), 500
 
 @app.route('/scrape/outbound')
 def scrape_outbound_only():
     """Endpoint pour récupérer seulement les données outbound"""
-    try:
-        # Code simplifié pour outbound seulement
-        # (même logique que /scrape mais arrêt après outbound)
-        return jsonify({
-            'message': 'Endpoint outbound only - à implémenter si nécessaire'
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return jsonify({
+        'message': 'Endpoint deprecated - utilisez /scrape/france ou /scrape/germany'
+    }), 404
 
 @app.route('/scrape/inbound')
 def scrape_inbound_only():
     """Endpoint pour récupérer seulement les données inbound"""
-    try:
-        # Code simplifié pour inbound seulement
-        # (même logique que /scrape mais arrêt après inbound)
-        return jsonify({
-            'message': 'Endpoint inbound only - à implémenter si nécessaire'
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    return jsonify({
+        'message': 'Endpoint deprecated - utilisez /scrape/france ou /scrape/germany'
+    }), 404
 
 if __name__ == '__main__':
     # Configuration pour Railway
