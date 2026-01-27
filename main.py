@@ -1,5 +1,5 @@
 # main.py - API Python complète pour scraping ERAC sur Railway
-# MODIFIÉE: Ajout récupération détails voiture + VIN pour chaque mission
+# SÉCURISÉ: Credentials en variables d'environnement
 
 from flask import Flask, jsonify
 import requests
@@ -313,29 +313,8 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
         }
 
 
-def parse_erac_address(address_str):
-    """Parse une adresse ERAC pour extraire composants"""
-    if not address_str:
-        return None
-    
-    parts = address_str.split(',')
-    result = {
-        'full': address_str.strip(),
-        'location': None,
-        'code': None,
-        'country': None
-    }
-    
-    if len(parts) > 0:
-        result['location'] = parts[0].strip()
-    if len(parts) > 1:
-        result['code'] = parts[-1].strip()
-    
-    return result
-
-
 def enrich_missions_with_details(session, missions, country="france", headers=None, delay=0.3):
-    """Enrichit les missions avec VIN et adresses parsées"""
+    """Enrichit les missions avec les détails (VIN, infos voiture)"""
     enriched = []
     total = len(missions)
     
@@ -345,33 +324,26 @@ def enrich_missions_with_details(session, missions, country="france", headers=No
         reg_no = mission.get('RegNo', 'N/A')
         print(f"[{percent}%] {idx+1}/{total} - {reg_no}")
         
+        # Utiliser correctement la clé 'Id' (majuscule)
         movement_id = mission.get('Id')
         
-        # Enrichissement simplifié
-        enriched_mission = {**mission}
-        
         if movement_id:
-            # Essayer de récupérer le VIN
+            # Active le debug pour le premier mouvement pour voir la structure HTML
             debug = (idx == 0)
             details = get_mission_details(session, movement_id, country, headers, debug=debug)
-            
+            enriched_mission = {**mission, **details}
             if details.get('vin'):
-                enriched_mission['vin'] = details.get('vin')
-                print(f"     ✓ VIN: {details.get('vin')}")
+                print(f"     ✓ VIN trouvé: {details.get('vin')}")
             else:
                 print(f"     ✗ VIN non trouvé")
-        
-        # Parser les adresses ERAC
-        if mission.get('CollectionAddress'):
-            enriched_mission['collection_address_parsed'] = parse_erac_address(mission.get('CollectionAddress'))
-        
-        if mission.get('DeliveryAddress'):
-            enriched_mission['delivery_address_parsed'] = parse_erac_address(mission.get('DeliveryAddress'))
+        else:
+            print(f"     ⚠️ Pas d'ID trouvé")
+            enriched_mission = mission
         
         enriched.append(enriched_mission)
         
-        # Délai entre les requêtes
-        if idx < total - 1:
+        # Délai entre les requêtes pour éviter le rate limiting
+        if idx < total - 1:  # Pas de délai après la dernière
             time.sleep(delay)
     
     print(f"✅ Enrichissement terminé: {total} missions traitées")
@@ -383,19 +355,19 @@ def scrape_erac_country(country="france", enrich_details=True):
     try:
         print(f"🚀 Début du scraping ERAC {country.upper()}...")
         
-        # Credentials selon le pays - Depuis les variables d'env
+        # ✅ SÉCURISÉ: Credentials depuis les variables d'environnement
         if country.lower() == "germany":
             login_id = os.getenv('ERAC_GERMANY_LOGIN')
             password = os.getenv('ERAC_GERMANY_PASSWORD')
             if not login_id or not password:
                 raise ValueError("⚠️ Variables d'env manquantes: ERAC_GERMANY_LOGIN et/ou ERAC_GERMANY_PASSWORD")
-            print("✓ Utilisation des credentials Germany (depuis env vars)")
+            print("✓ Utilisation des credentials Germany (env vars)")
         else:
             login_id = os.getenv('ERAC_FRANCE_LOGIN')
             password = os.getenv('ERAC_FRANCE_PASSWORD')
             if not login_id or not password:
                 raise ValueError("⚠️ Variables d'env manquantes: ERAC_FRANCE_LOGIN et/ou ERAC_FRANCE_PASSWORD")
-            print("✓ Utilisation des credentials France (depuis env vars)")
+            print("✓ Utilisation des credentials France (env vars)")
         
         # Session HTTP
         session = requests.Session()
@@ -439,13 +411,13 @@ def scrape_erac_country(country="france", enrich_details=True):
         login_headers.update(headers)
         
         # Double login (Outbound + Inbound)
-        login_response_outbound = session.post(
+        session.post(
             'https://erac.hkremarketing.com/Login?ReturnUrl=%2FVendor%2FCollection%2FOutbound', 
             data=login_payload, 
             headers=login_headers
         )
         
-        login_response_inbound = session.post(
+        session.post(
             'https://erac.hkremarketing.com/Login?ReturnUrl=%2FVendor%2FCollection%2FInbound', 
             data=login_payload, 
             headers=login_headers
@@ -475,7 +447,7 @@ def scrape_erac_country(country="france", enrich_details=True):
         }
         accept_headers.update(headers)
         
-        accept_response = session.post(
+        session.post(
             'https://erac.hkremarketing.com/vendor/scoc', 
             data=accept_payload, 
             headers=accept_headers
@@ -775,7 +747,7 @@ def scrape_germany():
 def debug_movement(movement_id):
     """Endpoint de debug pour inspecter un mouvement spécifique"""
     try:
-        # Récupérer les credentials depuis les env vars
+        # ✅ SÉCURISÉ: Credentials depuis les variables d'environnement
         login_id = os.getenv('ERAC_GERMANY_LOGIN')
         password = os.getenv('ERAC_GERMANY_PASSWORD')
         
@@ -829,23 +801,9 @@ def debug_movement(movement_id):
             'error': str(e)
         }), 500
 
-@app.route('/scrape/outbound')
-def scrape_outbound_only():
-    """Endpoint deprecated"""
-    return jsonify({
-        'message': 'Endpoint deprecated - utilisez /scrape/france ou /scrape/germany'
-    }), 404
-
-@app.route('/scrape/inbound')
-def scrape_inbound_only():
-    """Endpoint deprecated"""
-    return jsonify({
-        'message': 'Endpoint deprecated - utilisez /scrape/france ou /scrape/germany'
-    }), 404
-
 if __name__ == '__main__':
     # Configuration pour Railway
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 5030))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
     print(f"🚀 Démarrage de l'API ERAC Scraper v2.0 sur le port {port}")
