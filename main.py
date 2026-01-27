@@ -36,7 +36,6 @@ def health():
         "timestamp": datetime.utcnow().isoformat(),
         "service": "ERAC Scraper API"
     })
-    
 
 def get_mission_details(session, movement_id, country="france", headers=None, debug=False):
     """Récupère les détails d'une mission (VIN, infos voiture, etc.)"""
@@ -314,8 +313,29 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
         }
 
 
+def parse_erac_address(address_str):
+    """Parse une adresse ERAC pour extraire composants"""
+    if not address_str:
+        return None
+    
+    parts = address_str.split(',')
+    result = {
+        'full': address_str.strip(),
+        'location': None,
+        'code': None,
+        'country': None
+    }
+    
+    if len(parts) > 0:
+        result['location'] = parts[0].strip()
+    if len(parts) > 1:
+        result['code'] = parts[-1].strip()
+    
+    return result
+
+
 def enrich_missions_with_details(session, missions, country="france", headers=None, delay=0.3):
-    """Enrichit les missions avec les détails (VIN, infos voiture)"""
+    """Enrichit les missions avec VIN et adresses parsées"""
     enriched = []
     total = len(missions)
     
@@ -325,26 +345,33 @@ def enrich_missions_with_details(session, missions, country="france", headers=No
         reg_no = mission.get('RegNo', 'N/A')
         print(f"[{percent}%] {idx+1}/{total} - {reg_no}")
         
-        # Utiliser correctement la clé 'Id' (majuscule)
         movement_id = mission.get('Id')
         
+        # Enrichissement simplifié
+        enriched_mission = {**mission}
+        
         if movement_id:
-            # Active le debug pour le premier mouvement pour voir la structure HTML
+            # Essayer de récupérer le VIN
             debug = (idx == 0)
             details = get_mission_details(session, movement_id, country, headers, debug=debug)
-            enriched_mission = {**mission, **details}
+            
             if details.get('vin'):
-                print(f"     ✓ VIN trouvé: {details.get('vin')}")
+                enriched_mission['vin'] = details.get('vin')
+                print(f"     ✓ VIN: {details.get('vin')}")
             else:
                 print(f"     ✗ VIN non trouvé")
-        else:
-            print(f"     ⚠️ Pas d'ID trouvé")
-            enriched_mission = mission
+        
+        # Parser les adresses ERAC
+        if mission.get('CollectionAddress'):
+            enriched_mission['collection_address_parsed'] = parse_erac_address(mission.get('CollectionAddress'))
+        
+        if mission.get('DeliveryAddress'):
+            enriched_mission['delivery_address_parsed'] = parse_erac_address(mission.get('DeliveryAddress'))
         
         enriched.append(enriched_mission)
         
-        # Délai entre les requêtes pour éviter le rate limiting
-        if idx < total - 1:  # Pas de délai après la dernière
+        # Délai entre les requêtes
+        if idx < total - 1:
             time.sleep(delay)
     
     print(f"✅ Enrichissement terminé: {total} missions traitées")
