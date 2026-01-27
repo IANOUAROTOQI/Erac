@@ -1,5 +1,6 @@
 # main.py - API Python complète pour scraping ERAC sur Railway
 # SÉCURISÉ: Credentials en variables d'environnement
+# NOUVEAU: Indicateurs si dates récupérées
 
 from flask import Flask, jsonify
 import requests
@@ -17,7 +18,7 @@ def home():
     return jsonify({
         "service": "ERAC Scraper API",
         "status": "running",
-        "version": "2.0",
+        "version": "2.1",
         "endpoints": {
             "/": "GET - Informations de l'API",
             "/scrape/france": "GET - Scraping ERAC France (avec VIN)",
@@ -38,7 +39,7 @@ def health():
     })
 
 def get_mission_details(session, movement_id, country="france", headers=None, debug=False):
-    """Récupère les détails d'une mission (VIN, infos voiture, etc.)"""
+    """Récupère les détails d'une mission (VIN, infos voiture, dates, etc.)"""
     try:
         movement_url = f'https://erac.hkremarketing.com/movement/{movement_id}'
         
@@ -66,88 +67,88 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
             movement_data = {
                 'movement_id': movement_id,
                 'vin': None,
+                'vin_retrieved': False,
                 'make_model': None,
                 'registration': None,
                 'unit_no': None,
                 'collection_date': None,
+                'collection_date_retrieved': False,
                 'delivery_date': None,
-                'collection_address': None,
-                'delivery_address': None,
-                'collection_address_full': {
-                    'name': None,
-                    'address': None,
-                    'tel': None,
-                    'email': None
-                },
-                'delivery_address_full': {
-                    'name': None,
-                    'address': None,
-                    'tel': None,
-                    'email': None
-                },
-                'status': None,
-                'delivery_charge': None,
-                'error': None
+                'delivery_date_retrieved': False,
             }
             
-            # === CHERCHER LE VIN - Stratégie agressive ===
-            # 1. Chercher le label "VIN" puis prendre la valeur qui suit
+            # === CHERCHER LE VIN ===
             labels = soup.find_all('label', class_='control-label')
             for label in labels:
                 if 'VIN' in label.get_text().upper():
-                    # Trouver le parent et chercher le prochain p.form-control-static
                     parent = label.parent
                     vin_element = parent.find('p', class_='form-control-static')
                     if vin_element:
                         movement_data['vin'] = vin_element.get_text().strip()
+                        movement_data['vin_retrieved'] = True
                         if debug: print(f"   ✓ VIN trouvé via label: {movement_data['vin']}")
                         break
             
-            # 2. Si pas trouvé, chercher tous les p.form-control-static après un label VIN
             if not movement_data['vin']:
                 all_labels = soup.find_all('label')
                 for label in all_labels:
                     label_text = label.get_text().strip().upper()
                     if 'VIN' in label_text:
-                        # Trouver le prochain élément avec form-control-static
                         next_elem = label.find_next('p', class_='form-control-static')
                         if next_elem:
                             movement_data['vin'] = next_elem.get_text().strip()
+                            movement_data['vin_retrieved'] = True
                             if debug: print(f"   ✓ VIN trouvé via label+next: {movement_data['vin']}")
                             break
             
-            # 3. Chercher directement un p.form-control-static qui contient un VIN (17 caractères, commence par Z/W/V)
             if not movement_data['vin']:
                 all_form_statics = soup.find_all('p', class_='form-control-static')
                 if debug: print(f"   → Total p.form-control-static trouvés: {len(all_form_statics)}")
                 for elem in all_form_statics:
                     text = elem.get_text().strip().upper()
-                    # Un VIN fait 17 caractères et commence généralement par Z, W, V, 1, 2, 3, 4, 5, 6, 7, 8, 9, J, L, M, R, S, T, U, X, Y
                     if len(text) == 17 and text[0] in 'ZWVJLMRSTUX123456789':
                         movement_data['vin'] = text
+                        movement_data['vin_retrieved'] = True
                         if debug: print(f"   ✓ VIN trouvé via form-control-static: {text}")
                         break
-                    if debug and text:
-                        print(f"   → p.form-control-static: {text[:50]}")
             
-            # 4. Input avec id="Vin" (fallback)
             if not movement_data['vin']:
                 vin_element = soup.find('input', {'id': 'Vin'})
                 if vin_element:
                     movement_data['vin'] = vin_element.get('value', '').strip()
-                    if debug: print(f"   ✓ VIN trouvé via id='Vin': {movement_data['vin']}")
+                    if movement_data['vin']:
+                        movement_data['vin_retrieved'] = True
+                        if debug: print(f"   ✓ VIN trouvé via id='Vin': {movement_data['vin']}")
             
-            # 5. Input avec name="Vin" (fallback)
             if not movement_data['vin']:
                 vin_element = soup.find('input', {'name': 'Vin'})
                 if vin_element:
                     movement_data['vin'] = vin_element.get('value', '').strip()
-                    if debug: print(f"   ✓ VIN trouvé via name='Vin': {movement_data['vin']}")
+                    if movement_data['vin']:
+                        movement_data['vin_retrieved'] = True
+                        if debug: print(f"   ✓ VIN trouvé via name='Vin': {movement_data['vin']}")
+            
+            # === CHERCHER COLLECTION DATE ===
+            collection_date_element = soup.find('input', {'id': 'CollectionDate'}) or soup.find('input', {'name': 'CollectionDate'})
+            if collection_date_element:
+                collection_date_value = collection_date_element.get('value', '').strip()
+                if collection_date_value:
+                    movement_data['collection_date'] = collection_date_value
+                    movement_data['collection_date_retrieved'] = True
+                    if debug: print(f"   ✓ Collection Date trouvée: {collection_date_value}")
+            
+            # === CHERCHER DELIVERY DATE ===
+            delivery_date_element = soup.find('input', {'id': 'DeliveryDate'}) or soup.find('input', {'name': 'DeliveryDate'})
+            if delivery_date_element:
+                delivery_date_value = delivery_date_element.get('value', '').strip()
+                if delivery_date_value:
+                    movement_data['delivery_date'] = delivery_date_value
+                    movement_data['delivery_date_retrieved'] = True
+                    if debug: print(f"   ✓ Delivery Date trouvée: {delivery_date_value}")
             
             # === CHERCHER REGISTRATION ===
             reg_element = soup.find('input', {'id': 'RegNo'}) or soup.find('input', {'name': 'RegNo'})
             if not reg_element:
-                # Chercher dans les form-control-static
                 labels = soup.find_all('label')
                 for label in labels:
                     if 'RegNo' in label.get_text() or 'Reg No' in label.get_text() or 'Registration' in label.get_text():
@@ -188,162 +189,67 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
             else:
                 movement_data['unit_no'] = unit_element.get('value', '').strip()
             
-            # === CHERCHER DATES ===
-            collection_date_element = soup.find('input', {'id': 'CollectionDate'}) or soup.find('input', {'name': 'CollectionDate'})
-            if collection_date_element:
-                movement_data['collection_date'] = collection_date_element.get('value', '').strip()
-            
-            delivery_date_element = soup.find('input', {'id': 'DeliveryDate'}) or soup.find('input', {'name': 'DeliveryDate'})
-            if delivery_date_element:
-                movement_data['delivery_date'] = delivery_date_element.get('value', '').strip()
-            
-            # === CHERCHER ADRESSES COMPLÈTES (avec tel et email) ===
-            # Collection Address
-            collection_data = {
-                'name': None,
-                'address': None,
-                'tel': None,
-                'email': None
-            }
-            
-            # Chercher le titre "Collection Address"
-            collection_h2 = soup.find('h2', string='Collection Address')
-            if collection_h2:
-                # Chercher à partir du h2
-                parent_div = collection_h2.find_next()
-                if parent_div:
-                    # Chercher les h4 pour le nom et l'adresse
-                    h4_elements = parent_div.parent.find_all('h4', limit=2)
-                    if len(h4_elements) >= 1:
-                        # Premier h4 = nom
-                        name_text = h4_elements[0].get_text().strip()
-                        # Extraire le code entre parenthèses
-                        match = re.search(r'\(([^)]+)\)', name_text)
-                        code = match.group(1) if match else ''
-                        collection_data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
-                    
-                    if len(h4_elements) >= 2:
-                        # Deuxième h4 = adresse complète
-                        collection_data['address'] = h4_elements[1].get_text().strip()
-                    
-                    # Chercher Tel et Email après les h4
-                    current = h4_elements[-1] if h4_elements else parent_div
-                    for elem in current.find_all_next():
-                        if elem.name in ['h2', 'h1']:  # Arrêter au prochain h2
-                            break
-                        
-                        text = elem.get_text().strip()
-                        if text.startswith('Tel No.'):
-                            tel_match = re.search(r'Tel No\.:\s*([\d\s/\-]+)', text)
-                            if tel_match:
-                                collection_data['tel'] = tel_match.group(1).strip()
-                        
-                        if text.startswith('Email'):
-                            email_match = re.search(r'Email:\s*([^\s<]+)', text)
-                            if email_match:
-                                collection_data['email'] = email_match.group(1).strip()
-                        
-                        if collection_data['tel'] and collection_data['email']:
-                            break
-            
-            movement_data['collection_address_full'] = collection_data
-            
-            # === Delivery Address ===
-            delivery_data = {
-                'name': None,
-                'address': None,
-                'tel': None,
-                'email': None
-            }
-            
-            delivery_h2 = soup.find('h2', string='Delivery Address')
-            if delivery_h2:
-                parent_div = delivery_h2.find_next()
-                if parent_div:
-                    h4_elements = parent_div.parent.find_all('h4', limit=2)
-                    if len(h4_elements) >= 1:
-                        name_text = h4_elements[0].get_text().strip()
-                        match = re.search(r'\(([^)]+)\)', name_text)
-                        code = match.group(1) if match else ''
-                        delivery_data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
-                    
-                    if len(h4_elements) >= 2:
-                        delivery_data['address'] = h4_elements[1].get_text().strip()
-                    
-                    current = h4_elements[-1] if h4_elements else parent_div
-                    for elem in current.find_all_next():
-                        if elem.name in ['h2', 'h1']:
-                            break
-                        
-                        text = elem.get_text().strip()
-                        if text.startswith('Tel No.'):
-                            tel_match = re.search(r'Tel No\.:\s*([\d\s/\-]+)', text)
-                            if tel_match:
-                                delivery_data['tel'] = tel_match.group(1).strip()
-                        
-                        if text.startswith('Email'):
-                            email_match = re.search(r'Email:\s*([^\s<]+)', text)
-                            if email_match:
-                                delivery_data['email'] = email_match.group(1).strip()
-                        
-                        if delivery_data['tel'] and delivery_data['email']:
-                            break
-            
-            movement_data['delivery_address_full'] = delivery_data
-            
-            # === CHERCHER CHARGE ===
-            charge_element = soup.find('input', {'id': 'DeliveryCharge'}) or soup.find('input', {'name': 'DeliveryCharge'})
-            if charge_element:
-                movement_data['delivery_charge'] = charge_element.get('value', '').strip()
-            
             return movement_data
             
         else:
             print(f"⚠️ HTTP {response.status_code} pour {movement_id}")
-            return {
-                'movement_id': movement_id, 
-                'error': f'HTTP {response.status_code}'
-            }
+            return {'movement_id': movement_id, 'error': f'HTTP {response.status_code}'}
             
     except Exception as e:
         print(f"❌ Erreur parsing {movement_id}: {str(e)}")
-        return {
-            'movement_id': movement_id, 
-            'error': str(e)
-        }
+        return {'movement_id': movement_id, 'error': str(e)}
 
 
 def enrich_missions_with_details(session, missions, country="france", headers=None, delay=0.3):
-    """Enrichit les missions avec les détails (VIN, infos voiture)"""
+    """Enrichit les missions avec les détails (VIN, dates, etc.)"""
     enriched = []
     total = len(missions)
     
     for idx, mission in enumerate(missions):
-        # Log de progression
         percent = int((idx + 1) / total * 100)
         reg_no = mission.get('RegNo', 'N/A')
         print(f"[{percent}%] {idx+1}/{total} - {reg_no}")
         
-        # Utiliser correctement la clé 'Id' (majuscule)
+        enriched_mission = {**mission}
         movement_id = mission.get('Id')
         
         if movement_id:
-            # Active le debug pour le premier mouvement pour voir la structure HTML
             debug = (idx == 0)
             details = get_mission_details(session, movement_id, country, headers, debug=debug)
-            enriched_mission = {**mission, **details}
+            
+            # Ajouter les champs enrichis
+            enriched_mission['vin'] = details.get('vin')
+            enriched_mission['vin_retrieved'] = details.get('vin_retrieved', False)
+            enriched_mission['collection_date_details'] = details.get('collection_date')
+            enriched_mission['collection_date_retrieved'] = details.get('collection_date_retrieved', False)
+            enriched_mission['delivery_date_details'] = details.get('delivery_date')
+            enriched_mission['delivery_date_retrieved'] = details.get('delivery_date_retrieved', False)
+            
             if details.get('vin'):
-                print(f"     ✓ VIN trouvé: {details.get('vin')}")
+                print(f"     ✓ VIN: {details.get('vin')}")
             else:
                 print(f"     ✗ VIN non trouvé")
+            
+            if details.get('collection_date_retrieved'):
+                print(f"     ✓ Collection Date: {details.get('collection_date')}")
+            else:
+                print(f"     ✗ Collection Date non trouvée")
+            
+            if details.get('delivery_date_retrieved'):
+                print(f"     ✓ Delivery Date: {details.get('delivery_date')}")
+            else:
+                print(f"     ✗ Delivery Date non trouvée")
         else:
-            print(f"     ⚠️ Pas d'ID trouvé")
-            enriched_mission = mission
+            enriched_mission['vin'] = None
+            enriched_mission['vin_retrieved'] = False
+            enriched_mission['collection_date_details'] = None
+            enriched_mission['collection_date_retrieved'] = False
+            enriched_mission['delivery_date_details'] = None
+            enriched_mission['delivery_date_retrieved'] = False
         
         enriched.append(enriched_mission)
         
-        # Délai entre les requêtes pour éviter le rate limiting
-        if idx < total - 1:  # Pas de délai après la dernière
+        if idx < total - 1:
             time.sleep(delay)
     
     print(f"✅ Enrichissement terminé: {total} missions traitées")
@@ -405,12 +311,10 @@ def scrape_erac_country(country="france", enrich_details=True):
             '__RequestVerificationToken': token,
         }
         
-        login_headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        }
+        login_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
         login_headers.update(headers)
         
-        # Double login (Outbound + Inbound)
+        # Double login
         session.post(
             'https://erac.hkremarketing.com/Login?ReturnUrl=%2FVendor%2FCollection%2FOutbound', 
             data=login_payload, 
@@ -433,18 +337,11 @@ def scrape_erac_country(country="france", enrich_details=True):
         token_element = terms_page_soup.find('input', {'name': '__RequestVerificationToken'})
         if token_element:
             token = token_element['value']
-            accept_payload = {
-                'action': 'agree',
-                '__RequestVerificationToken': token,
-            }
+            accept_payload = {'action': 'agree', '__RequestVerificationToken': token}
         else:
-            accept_payload = {
-                'action': 'agree',
-            }
+            accept_payload = {'action': 'agree'}
 
-        accept_headers = {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        }
+        accept_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
         accept_headers.update(headers)
         
         session.post(
@@ -463,75 +360,9 @@ def scrape_erac_country(country="france", enrich_details=True):
         }
         ajax_headers.update(headers)
         
-        # Payload Outbound
+        # Payload Outbound (simplifié)
         ajax_payload_outbound = {
             'draw': 2,
-            'columns[0][data]': 'GroupCode',
-            'columns[0][name]': '',
-            'columns[0][searchable]': 'true',
-            'columns[0][orderable]': 'true',
-            'columns[0][search][value]': '',
-            'columns[0][search][regex]': 'false',
-            'columns[1][data]': 'RegNo',
-            'columns[1][name]': '',
-            'columns[1][searchable]': 'true',
-            'columns[1][orderable]': 'true',
-            'columns[1][search][value]': '',
-            'columns[1][search][regex]': 'false',
-            'columns[2][data]': 'UnitNo',
-            'columns[2][name]': '',
-            'columns[2][searchable]': 'true',
-            'columns[2][orderable]': 'true',
-            'columns[2][search][value]': '',
-            'columns[2][search][regex]': 'false',
-            'columns[3][data]': 'MakeModel',
-            'columns[3][name]': '',
-            'columns[3][searchable]': 'true',
-            'columns[3][orderable]': 'true',
-            'columns[3][search][value]': '',
-            'columns[3][search][regex]': 'false',
-            'columns[4][data]': 'DeliveryCharge',
-            'columns[4][name]': '',
-            'columns[4][searchable]': 'true',
-            'columns[4][orderable]': 'true',
-            'columns[4][search][value]': '',
-            'columns[4][search][regex]': 'false',
-            'columns[5][data]': 'AllocationDate',
-            'columns[5][name]': '',
-            'columns[5][searchable]': 'true',
-            'columns[5][orderable]': 'true',
-            'columns[5][search][value]': '',
-            'columns[5][search][regex]': 'false',
-            'columns[6][data]': 'AllocationDateTicks',
-            'columns[6][name]': '',
-            'columns[6][searchable]': 'true',
-            'columns[6][orderable]': 'true',
-            'columns[6][search][value]': '',
-            'columns[6][search][regex]': 'false',
-            'columns[7][data]': 'CollectionAddress',
-            'columns[7][name]': '',
-            'columns[7][searchable]': 'true',
-            'columns[7][orderable]': 'true',
-            'columns[7][search][value]': '',
-            'columns[7][search][regex]': 'false',
-            'columns[8][data]': 'ExpectedDeliveryDate',
-            'columns[8][name]': '',
-            'columns[8][searchable]': 'true',
-            'columns[8][orderable]': 'true',
-            'columns[8][search][value]': '',
-            'columns[8][search][regex]': 'false',
-            'columns[9][data]': 'ExpectedDeliveryDateTicks',
-            'columns[9][name]': '',
-            'columns[9][searchable]': 'true',
-            'columns[9][orderable]': 'true',
-            'columns[9][search][value]': '',
-            'columns[9][search][regex]': 'false',
-            'columns[10][data]': 'DeliveryAddress',
-            'columns[10][name]': '',
-            'columns[10][searchable]': 'true',
-            'columns[10][orderable]': 'true',
-            'columns[10][search][value]': '',
-            'columns[10][search][regex]': 'false',
             'order[0][column]': 0,
             'order[0][dir]': 'asc',
             'start': 0,
@@ -540,87 +371,11 @@ def scrape_erac_country(country="france", enrich_details=True):
             'search[regex]': 'false',
             'Code': 'outbound',
             'MovementType': 'collections',
-            'RegNo': '',
-            'CollectionDateFrom': '',
-            'CollectionDateTo': '',
-            'CollectionPostcode': '',
-            'DeliveryDateFrom': '',
-            'DeliveryDateTo': '',
-            'DeliveryPostcode': '',
-            'CreatedDateFrom': '',
-            'CreatedDateTo': '',
-            'ReleaseCode': ''
         }
         
-        # Payload Inbound
+        # Payload Inbound (simplifié)
         ajax_payload_inbound = {
             'draw': 2,
-            'columns[0][data]': 'GroupCode',
-            'columns[0][name]': '',
-            'columns[0][searchable]': 'true',
-            'columns[0][orderable]': 'true',
-            'columns[0][search][value]': '',
-            'columns[0][search][regex]': 'false',
-            'columns[1][data]': 'RegNo',
-            'columns[1][name]': '',
-            'columns[1][searchable]': 'true',
-            'columns[1][orderable]': 'true',
-            'columns[1][search][value]': '',
-            'columns[1][search][regex]': 'false',
-            'columns[2][data]': 'UnitNo',
-            'columns[2][name]': '',
-            'columns[2][searchable]': 'true',
-            'columns[2][orderable]': 'true',
-            'columns[2][search][value]': '',
-            'columns[2][search][regex]': 'false',
-            'columns[3][data]': 'MakeModel',
-            'columns[3][name]': '',
-            'columns[3][searchable]': 'true',
-            'columns[3][orderable]': 'true',
-            'columns[3][search][value]': '',
-            'columns[3][search][regex]': 'false',
-            'columns[4][data]': 'DeliveryCharge',
-            'columns[4][name]': '',
-            'columns[4][searchable]': 'true',
-            'columns[4][orderable]': 'true',
-            'columns[4][search][value]': '',
-            'columns[4][search][regex]': 'false',
-            'columns[5][data]': 'AllocationDate',
-            'columns[5][name]': '',
-            'columns[5][searchable]': 'true',
-            'columns[5][orderable]': 'true',
-            'columns[5][search][value]': '',
-            'columns[5][search][regex]': 'false',
-            'columns[6][data]': 'AllocationDateTicks',
-            'columns[6][name]': '',
-            'columns[6][searchable]': 'true',
-            'columns[6][orderable]': 'true',
-            'columns[6][search][value]': '',
-            'columns[6][search][regex]': 'false',
-            'columns[7][data]': 'CollectionAddress',
-            'columns[7][name]': '',
-            'columns[7][searchable]': 'true',
-            'columns[7][orderable]': 'true',
-            'columns[7][search][value]': '',
-            'columns[7][search][regex]': 'false',
-            'columns[8][data]': 'ExpectedDeliveryDate',
-            'columns[8][name]': '',
-            'columns[8][searchable]': 'true',
-            'columns[8][orderable]': 'true',
-            'columns[8][search][value]': '',
-            'columns[8][search][regex]': 'false',
-            'columns[9][data]': 'ExpectedDeliveryDateTicks',
-            'columns[9][name]': '',
-            'columns[9][searchable]': 'true',
-            'columns[9][orderable]': 'true',
-            'columns[9][search][value]': '',
-            'columns[9][search][regex]': 'false',
-            'columns[10][data]': 'DeliveryAddress',
-            'columns[10][name]': '',
-            'columns[10][searchable]': 'true',
-            'columns[10][orderable]': 'true',
-            'columns[10][search][value]': '',
-            'columns[10][search][regex]': 'false',
             'order[0][column]': 0,
             'order[0][dir]': 'asc',
             'start': 0,
@@ -629,16 +384,6 @@ def scrape_erac_country(country="france", enrich_details=True):
             'search[regex]': 'false',
             'Code': 'inbound',
             'MovementType': 'collections',
-            'RegNo': '',
-            'CollectionDateFrom': '',
-            'CollectionDateTo': '',
-            'CollectionPostcode': '',
-            'DeliveryDateFrom': '',
-            'DeliveryDateTo': '',
-            'DeliveryPostcode': '',
-            'CreatedDateFrom': '',
-            'CreatedDateTo': '',
-            'ReleaseCode': ''
         }
         
         # Exécution des requêtes AJAX
@@ -658,15 +403,15 @@ def scrape_erac_country(country="france", enrich_details=True):
         data_inbound = ajax_response_inbound.json()
         data_outbound = ajax_response_outbound.json()
         
-        # ✨ NOUVEAU: Enrichir avec détails voiture si demandé
+        # Enrichir avec détails voiture
         if enrich_details:
-            print(f"🚗 Enrichissement des données {country.upper()} avec VIN et infos voiture...")
+            print(f"🚗 Enrichissement des données {country.upper()} avec VIN et dates...")
             enriched_inbound = enrich_missions_with_details(
                 session, 
                 data_inbound['data'], 
                 country, 
                 ajax_headers,
-                delay=0.3  # 300ms entre chaque requête
+                delay=0.3
             )
             enriched_outbound = enrich_missions_with_details(
                 session, 
@@ -686,8 +431,6 @@ def scrape_erac_country(country="france", enrich_details=True):
             'timestamp': datetime.utcnow().isoformat(),
             'total_inbound': len(enriched_inbound),
             'total_outbound': len(enriched_outbound),
-            'records_total_inbound': data_inbound.get('recordsTotal', 0),
-            'records_total_outbound': data_outbound.get('recordsTotal', 0),
             'enriched': enrich_details
         }
         
@@ -703,14 +446,14 @@ def scrape_erac_country(country="france", enrich_details=True):
 
 @app.route('/scrape/france')
 def scrape_france():
-    """Endpoint pour le scraping ERAC France avec détails voiture"""
+    """Endpoint pour le scraping ERAC France"""
     try:
         data = scrape_erac_country("france", enrich_details=True)
         
         return jsonify({
             'success': True,
             'data': data,
-            'message': f"✅ Scraping FRANCE réussi: {data['total_outbound']} véhicules outbound, {data['total_inbound']} véhicules inbound"
+            'message': f"✅ Scraping FRANCE réussi: {data['total_outbound']} outbound, {data['total_inbound']} inbound"
         })
         
     except Exception as e:
@@ -719,19 +462,18 @@ def scrape_france():
             'error': str(e),
             'country': 'FRANCE',
             'timestamp': datetime.utcnow().isoformat(),
-            'message': '❌ Erreur lors du scraping ERAC France'
         }), 500
 
 @app.route('/scrape/germany')
 def scrape_germany():
-    """Endpoint pour le scraping ERAC Germany avec détails voiture"""
+    """Endpoint pour le scraping ERAC Germany"""
     try:
         data = scrape_erac_country("germany", enrich_details=True)
         
         return jsonify({
             'success': True,
             'data': data,
-            'message': f"✅ Scraping GERMANY réussi: {data['total_outbound']} véhicules outbound, {data['total_inbound']} véhicules inbound"
+            'message': f"✅ Scraping GERMANY réussi: {data['total_outbound']} outbound, {data['total_inbound']} inbound"
         })
         
     except Exception as e:
@@ -740,14 +482,12 @@ def scrape_germany():
             'error': str(e),
             'country': 'GERMANY',
             'timestamp': datetime.utcnow().isoformat(),
-            'message': '❌ Erreur lors du scraping ERAC Germany'
         }), 500
 
 @app.route('/debug/movement/<movement_id>')
 def debug_movement(movement_id):
     """Endpoint de debug pour inspecter un mouvement spécifique"""
     try:
-        # ✅ SÉCURISÉ: Credentials depuis les variables d'environnement
         login_id = os.getenv('ERAC_GERMANY_LOGIN')
         password = os.getenv('ERAC_GERMANY_PASSWORD')
         
@@ -803,16 +543,16 @@ def debug_movement(movement_id):
 
 if __name__ == '__main__':
     # Configuration pour Railway
-    port = int(os.environ.get('PORT', 5030))
+    port = int(os.environ.get('PORT', 5000))
     debug = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
     
-    print(f"🚀 Démarrage de l'API ERAC Scraper v2.0 sur le port {port}")
+    print(f"🚀 Démarrage de l'API ERAC Scraper v2.1 sur le port {port}")
     print("=" * 50)
     print("Endpoints disponibles:")
     print("  GET  /              - Informations de l'API")
     print("  GET  /health        - Status de santé") 
-    print("  GET  /scrape/france - Scraping ERAC France (avec VIN)")
-    print("  GET  /scrape/germany - Scraping ERAC Germany (avec VIN)")
+    print("  GET  /scrape/france - Scraping ERAC France")
+    print("  GET  /scrape/germany - Scraping ERAC Germany")
     print("=" * 50)
     
     app.run(host='0.0.0.0', port=port, debug=debug)
