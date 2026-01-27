@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import os
 from datetime import datetime
 import time
+import re
 
 app = Flask(__name__)
 
@@ -72,6 +73,18 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
                 'delivery_date': None,
                 'collection_address': None,
                 'delivery_address': None,
+                'collection_address_full': {
+                    'name': None,
+                    'address': None,
+                    'tel': None,
+                    'email': None
+                },
+                'delivery_address_full': {
+                    'name': None,
+                    'address': None,
+                    'tel': None,
+                    'email': None
+                },
                 'status': None,
                 'delivery_charge': None,
                 'error': None
@@ -184,14 +197,99 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
             if delivery_date_element:
                 movement_data['delivery_date'] = delivery_date_element.get('value', '').strip()
             
-            # === CHERCHER ADRESSES (probablement en textarea) ===
-            collection_addr_element = soup.find('textarea', {'id': 'CollectionAddress'}) or soup.find('textarea', {'name': 'CollectionAddress'})
-            if collection_addr_element:
-                movement_data['collection_address'] = collection_addr_element.text.strip()
+            # === CHERCHER ADRESSES COMPLÈTES (avec tel et email) ===
+            # Collection Address
+            collection_data = {
+                'name': None,
+                'address': None,
+                'tel': None,
+                'email': None
+            }
             
-            delivery_addr_element = soup.find('textarea', {'id': 'DeliveryAddress'}) or soup.find('textarea', {'name': 'DeliveryAddress'})
-            if delivery_addr_element:
-                movement_data['delivery_address'] = delivery_addr_element.text.strip()
+            # Chercher le titre "Collection Address"
+            collection_h2 = soup.find('h2', string='Collection Address')
+            if collection_h2:
+                # Chercher à partir du h2
+                parent_div = collection_h2.find_next()
+                if parent_div:
+                    # Chercher les h4 pour le nom et l'adresse
+                    h4_elements = parent_div.parent.find_all('h4', limit=2)
+                    if len(h4_elements) >= 1:
+                        # Premier h4 = nom
+                        name_text = h4_elements[0].get_text().strip()
+                        # Extraire le code entre parenthèses
+                        match = re.search(r'\(([^)]+)\)', name_text)
+                        code = match.group(1) if match else ''
+                        collection_data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
+                    
+                    if len(h4_elements) >= 2:
+                        # Deuxième h4 = adresse complète
+                        collection_data['address'] = h4_elements[1].get_text().strip()
+                    
+                    # Chercher Tel et Email après les h4
+                    current = h4_elements[-1] if h4_elements else parent_div
+                    for elem in current.find_all_next():
+                        if elem.name in ['h2', 'h1']:  # Arrêter au prochain h2
+                            break
+                        
+                        text = elem.get_text().strip()
+                        if text.startswith('Tel No.'):
+                            tel_match = re.search(r'Tel No\.:\s*([\d\s/\-]+)', text)
+                            if tel_match:
+                                collection_data['tel'] = tel_match.group(1).strip()
+                        
+                        if text.startswith('Email'):
+                            email_match = re.search(r'Email:\s*([^\s<]+)', text)
+                            if email_match:
+                                collection_data['email'] = email_match.group(1).strip()
+                        
+                        if collection_data['tel'] and collection_data['email']:
+                            break
+            
+            movement_data['collection_address_full'] = collection_data
+            
+            # === Delivery Address ===
+            delivery_data = {
+                'name': None,
+                'address': None,
+                'tel': None,
+                'email': None
+            }
+            
+            delivery_h2 = soup.find('h2', string='Delivery Address')
+            if delivery_h2:
+                parent_div = delivery_h2.find_next()
+                if parent_div:
+                    h4_elements = parent_div.parent.find_all('h4', limit=2)
+                    if len(h4_elements) >= 1:
+                        name_text = h4_elements[0].get_text().strip()
+                        match = re.search(r'\(([^)]+)\)', name_text)
+                        code = match.group(1) if match else ''
+                        delivery_data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
+                    
+                    if len(h4_elements) >= 2:
+                        delivery_data['address'] = h4_elements[1].get_text().strip()
+                    
+                    current = h4_elements[-1] if h4_elements else parent_div
+                    for elem in current.find_all_next():
+                        if elem.name in ['h2', 'h1']:
+                            break
+                        
+                        text = elem.get_text().strip()
+                        if text.startswith('Tel No.'):
+                            tel_match = re.search(r'Tel No\.:\s*([\d\s/\-]+)', text)
+                            if tel_match:
+                                delivery_data['tel'] = tel_match.group(1).strip()
+                        
+                        if text.startswith('Email'):
+                            email_match = re.search(r'Email:\s*([^\s<]+)', text)
+                            if email_match:
+                                delivery_data['email'] = email_match.group(1).strip()
+                        
+                        if delivery_data['tel'] and delivery_data['email']:
+                            break
+            
+            movement_data['delivery_address_full'] = delivery_data
             
             # === CHERCHER CHARGE ===
             charge_element = soup.find('input', {'id': 'DeliveryCharge'}) or soup.find('input', {'name': 'DeliveryCharge'})
