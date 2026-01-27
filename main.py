@@ -36,6 +36,7 @@ def health():
         "timestamp": datetime.utcnow().isoformat(),
         "service": "ERAC Scraper API"
     })
+    
 
 def get_mission_details(session, movement_id, country="france", headers=None, debug=False):
     """Récupère les détails d'une mission (VIN, infos voiture, etc.)"""
