@@ -633,10 +633,10 @@ def debug_movement(movement_id):
 # NOUVELLES FONCTIONS - INTENDER (OFFRES À BIDDER)
 # ============================================================
 
-def erac_login(country="germany", return_url="/Vendor/Tender/InTender"):
+def erac_login_for_tender(country="germany"):
     """
-    Crée une session authentifiée sur ERAC.
-    Réutilisable pour InTender et autres pages.
+    Crée une session authentifiée sur ERAC pour InTender.
+    Utilise EXACTEMENT le même flow de login que le scraper existant qui fonctionne.
     """
     if country.lower() == "germany":
         login_id = os.getenv('ERAC_GERMANY_LOGIN')
@@ -651,51 +651,85 @@ def erac_login(country="germany", return_url="/Vendor/Tender/InTender"):
     session = requests.Session()
     
     headers = {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Encoding': 'gzip, deflate, br',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Encoding': 'gzip, deflate, br, zstd',
         'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
         'Connection': 'keep-alive',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
     }
     
-    encoded_return = return_url.replace('/', '%2F')
-    login_url = f'https://erac.hkremarketing.com/Login?ReturnUrl={encoded_return}'
+    # Étape 1: Login via Outbound (exactement comme le scraper existant)
+    print(f"🔐 Connexion {country.upper()} (même flow que scraper existant)...")
+    login_page_response = session.get(
+        'https://erac.hkremarketing.com/Login?ReturnUrl=%2FVendor%2FCollection%2FOutbound',
+        headers=headers
+    )
     
-    # Récupérer le token CSRF
-    print(f"🔐 Connexion {country.upper()}...")
-    login_page = session.get(login_url, headers=headers)
-    login_soup = BeautifulSoup(login_page.text, 'html.parser')
-    token_el = login_soup.find('input', {'name': '__RequestVerificationToken'})
+    login_page_soup = BeautifulSoup(login_page_response.text, 'html.parser')
+    token_element = login_page_soup.find('input', {'name': '__RequestVerificationToken'})
     
-    if not token_el:
-        raise ValueError("Token de vérification non trouvé")
+    if not token_element:
+        raise ValueError("Token de vérification non trouvé - la page de login peut avoir changé")
     
-    # Login
+    token = token_element['value']
+    print("✓ Token extrait")
+    
     login_payload = {
         'LoginId': login_id,
         'Password': password,
-        '__RequestVerificationToken': token_el['value'],
+        '__RequestVerificationToken': token,
     }
-    login_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    
+    login_headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
     login_headers.update(headers)
     
-    session.post(login_url, data=login_payload, headers=login_headers)
+    # Double login comme le scraper existant
+    session.post(
+        'https://erac.hkremarketing.com/Login?ReturnUrl=%2FVendor%2FCollection%2FOutbound',
+        data=login_payload,
+        headers=login_headers
+    )
     
-    # Accepter les conditions
-    terms_page = session.get('https://erac.hkremarketing.com/vendor/scoc', headers=headers)
-    terms_soup = BeautifulSoup(terms_page.text, 'html.parser')
-    terms_token = terms_soup.find('input', {'name': '__RequestVerificationToken'})
-    
-    if terms_token:
-        accept_payload = {
-            'action': 'agree',
-            '__RequestVerificationToken': terms_token['value'],
-        }
-        accept_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-        accept_headers.update(headers)
-        session.post('https://erac.hkremarketing.com/vendor/scoc', data=accept_payload, headers=accept_headers)
+    session.post(
+        'https://erac.hkremarketing.com/Login?ReturnUrl=%2FVendor%2FCollection%2FInbound',
+        data=login_payload,
+        headers=login_headers
+    )
     
     print(f"✓ Connexion {country.upper()} réussie")
+    
+    # Étape 2: Accepter les conditions
+    print("⚖️ Acceptation des conditions...")
+    terms_page_response = session.get('https://erac.hkremarketing.com/vendor/scoc', headers=headers)
+    terms_page_soup = BeautifulSoup(terms_page_response.text, 'html.parser')
+    
+    token_element = terms_page_soup.find('input', {'name': '__RequestVerificationToken'})
+    if token_element:
+        token = token_element['value']
+        accept_payload = {
+            'action': 'agree',
+            '__RequestVerificationToken': token,
+        }
+    else:
+        accept_payload = {
+            'action': 'agree',
+        }
+    
+    accept_headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }
+    accept_headers.update(headers)
+    
+    session.post(
+        'https://erac.hkremarketing.com/vendor/scoc',
+        data=accept_payload,
+        headers=accept_headers
+    )
+    
+    print("✓ Conditions acceptées")
+    
     return session, headers
 
 
@@ -903,8 +937,8 @@ def scrape_intender(country="germany"):
     try:
         print(f"🎯 Début du scraping InTender {country.upper()}...")
         
-        # Login avec la fonction réutilisable
-        session, headers = erac_login(country, return_url="/Vendor/Tender/InTender")
+        # Login avec exactement le même flow que le scraper existant
+        session, headers = erac_login_for_tender(country)
         
         # Récupérer la page InTender
         print("📊 Récupération de la page InTender...")
@@ -913,27 +947,77 @@ def scrape_intender(country="germany"):
             headers=headers
         )
         
+        print(f"📡 HTTP Status: {tender_response.status_code}")
+        print(f"📡 URL finale: {tender_response.url}")
+        print(f"📡 Taille HTML: {len(tender_response.text)} caractères")
+        
         if tender_response.status_code != 200:
             raise ValueError(f"HTTP {tender_response.status_code} sur InTender")
         
-        # Vérifier qu'on est bien sur la bonne page
-        if 'Offered for Tender' not in tender_response.text:
-            if 'Login' in tender_response.text:
-                raise ValueError("Session expirée - redirigé vers login")
-            if 'Closed' in tender_response.text or 'No vehicles' in tender_response.text:
+        # Debug: vérifier le contenu de la page
+        html_text = tender_response.text
+        has_tender_title = 'Offered for Tender' in html_text
+        has_login = 'LoginId' in html_text
+        has_table = 'tblVehicles' in html_text
+        has_closed = 'Closed' in html_text
+        
+        print(f"📡 Contient 'Offered for Tender': {has_tender_title}")
+        print(f"📡 Contient 'LoginId' (page login): {has_login}")
+        print(f"📡 Contient 'tblVehicles': {has_table}")
+        print(f"📡 Contient 'Closed': {has_closed}")
+        
+        # Sauvegarder le HTML pour debug
+        try:
+            with open('/tmp/intender_debug.html', 'w', encoding='utf-8') as f:
+                f.write(html_text)
+            print("📡 HTML sauvegardé dans /tmp/intender_debug.html")
+        except:
+            pass
+        
+        if has_login and not has_tender_title:
+            raise ValueError("Session expirée - redirigé vers login. Vérifiez les credentials.")
+        
+        if not has_table:
+            if has_closed:
                 return {
                     'country': country.upper(),
                     'status': 'no_active_tender',
                     'vehicles': [],
                     'count': 0,
-                    'timestamp': datetime.utcnow().isoformat()
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'debug': {
+                        'http_status': tender_response.status_code,
+                        'final_url': tender_response.url,
+                        'html_size': len(html_text),
+                        'has_tender_title': has_tender_title,
+                        'has_login': has_login,
+                        'has_table': has_table
+                    }
+                }
+            else:
+                # Retourner un aperçu du HTML pour debug
+                return {
+                    'country': country.upper(),
+                    'status': 'unexpected_page',
+                    'vehicles': [],
+                    'count': 0,
+                    'timestamp': datetime.utcnow().isoformat(),
+                    'debug': {
+                        'http_status': tender_response.status_code,
+                        'final_url': tender_response.url,
+                        'html_size': len(html_text),
+                        'has_tender_title': has_tender_title,
+                        'has_login': has_login,
+                        'has_table': has_table,
+                        'html_preview': html_text[:2000]
+                    }
                 }
         
         print("✓ Page InTender récupérée")
         
         # Parser le HTML
         print("🔍 Parsing des véhicules...")
-        result = parse_tender_vehicles(tender_response.text)
+        result = parse_tender_vehicles(html_text)
         
         result['country'] = country.upper()
         result['status'] = 'active'
