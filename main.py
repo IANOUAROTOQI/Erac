@@ -798,12 +798,32 @@ def parse_tender_vehicles(html_content):
 
 
 def parse_tender_row(row, idx):
-    """Parse une ligne <tr> du tableau InTender."""
+    """
+    Parse une ligne <tr> du tableau InTender.
+    Gère 2 layouts différents automatiquement:
+    - Allemagne: 16 colonnes (avec Desired Collect Date + Desired Delivery Date)
+    - France: 14 colonnes (sans ces 2 colonnes)
+    
+    Colonnes communes (0-12):
+    0: Link Move | 1: Make Model | 2: Vehicle Type
+    3: Collection code | 4: Collection Town | 5: Collection Post Code
+    6: Delivery code | 7: Delivery Town | 8: Delivery Post Code
+    9: Del Date (input) | 10: Charge (input) | 11: Service (select)
+    12: Route Estimate
+    
+    Allemagne: 13=Desired Collect, 14=Desired Delivery, 15=Special Instructions
+    France: 13=Special Instructions
+    """
     try:
         cells = row.find_all('td')
-        if len(cells) < 12:
-            print(f"  ⚠️ Row {idx}: pas assez de colonnes ({len(cells)})")
+        num_cols = len(cells)
+        
+        if num_cols < 13:
+            print(f"  ⚠️ Row {idx}: pas assez de colonnes ({num_cols})")
             return None
+        
+        # Détecter le layout par nombre de colonnes
+        has_desired_dates = num_cols >= 16
         
         # TENDER VEHICLE ID (hidden input)
         tender_vehicle_id_el = row.find('input', {'name': re.compile(r'Vehicles\[\d+\]\.TenderVehicleId')})
@@ -864,7 +884,7 @@ def parse_tender_row(row, idx):
                 })
         
         # ROUTE ESTIMATE
-        route_estimate = cells[12].get_text(strip=True) if len(cells) > 12 else ''
+        route_estimate = cells[12].get_text(strip=True) if num_cols > 12 else ''
         route_distance_km = None
         route_duration = None
         if route_estimate:
@@ -875,17 +895,22 @@ def parse_tender_row(row, idx):
             if dur_match:
                 route_duration = dur_match.group(1).strip()
         
-        # DESIRED COLLECT DATE
-        desired_collect_date = cells[13].get_text(strip=True) if len(cells) > 13 else ''
+        # COLONNES QUI DÉPENDENT DU LAYOUT
+        desired_collect_date = ''
+        desired_delivery_date = ''
+        special_instructions = ''
         
-        # DESIRED DELIVERY DATE
-        desired_delivery_date = cells[14].get_text(strip=True) if len(cells) > 14 else ''
+        if has_desired_dates:
+            # Layout Allemagne: 16 colonnes
+            desired_collect_date = cells[13].get_text(strip=True) if num_cols > 13 else ''
+            desired_delivery_date = cells[14].get_text(strip=True) if num_cols > 14 else ''
+            special_instructions = cells[15].get_text(strip=True) if num_cols > 15 else ''
+        else:
+            # Layout France: 14 colonnes (pas de desired dates)
+            special_instructions = cells[13].get_text(strip=True) if num_cols > 13 else ''
         
-        # SPECIAL INSTRUCTIONS
-        special_instructions = cells[15].get_text(strip=True) if len(cells) > 15 else ''
-        
-        # Parse flags utiles
-        needs_trailer = bool(re.search(r'needs?\s+trailer', special_instructions, re.IGNORECASE))
+        # Parse flags utiles depuis special instructions
+        needs_trailer = bool(re.search(r'needs?\s+trailer|sur\s+camion', special_instructions, re.IGNORECASE))
         is_driveable = bool(re.search(r'driveable', special_instructions, re.IGNORECASE))
         is_rollable = bool(re.search(r'rollable', special_instructions, re.IGNORECASE))
         
@@ -956,10 +981,10 @@ def scrape_intender(country="germany"):
         
         # Debug: vérifier le contenu de la page
         html_text = tender_response.text
-        has_tender_title = 'Offered for Tender' in html_text
+        has_tender_title = 'Offered for Tender' in html_text or 'Offert pour' in html_text
         has_login = 'LoginId' in html_text
         has_table = 'tblVehicles' in html_text
-        has_closed = 'Closed' in html_text
+        has_closed = 'Closed' in html_text or 'ferm' in html_text
         
         print(f"📡 Contient 'Offered for Tender': {has_tender_title}")
         print(f"📡 Contient 'LoginId' (page login): {has_login}")
