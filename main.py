@@ -105,7 +105,7 @@ def _parse_address_section(heading_tag):
         ...
       </div>
     """
-    data = {'name': None, 'address': None, 'tel': None, 'email': None}
+    data = {'name': None, 'address': None, 'tel': None, 'email': None, 'special_instructions': None}
 
     if not heading_tag:
         return data
@@ -128,13 +128,33 @@ def _parse_address_section(heading_tag):
 
     # === TEL et EMAIL via les <div> du container ===
     # &nbsp; est converti en \xa0 par BeautifulSoup — on normalise
-    for div in container.find_all('div', recursive=True):
-        # Ignorer les divs imbriqués profonds (alert etc.)
-        raw = div.get_text(' ', strip=True).replace('\xa0', ' ').strip()
+    # === TEL, EMAIL, SPECIAL INSTRUCTIONS ===
+    # Chercher dans tous les divs directs du parent du heading (siblings)
+    # ET dans le container interne — couvre les deux structures FR/EN
+    search_zones = []
+    if container:
+        search_zones.append(container)
+    # Aussi parcourir les siblings directs du heading (structure FR)
+    for sibling in heading_tag.find_all_next():
+        if sibling.name in ['h1', 'h2', 'h3'] and sibling != heading_tag:
+            break
+        search_zones.append(sibling)
+
+    seen = set()
+    for elem in search_zones:
+        eid = id(elem)
+        if eid in seen:
+            continue
+        seen.add(eid)
+
+        if elem.name != 'div':
+            continue
+
+        raw = elem.get_text(' ', strip=True).replace('\xa0', ' ').strip()
         if not raw:
             continue
 
-        # Tel — prendre le premier numéro trouvé
+        # Tel
         if any(k in raw for k in KEYS['tel']) and not data['tel']:
             tel = _extract_tel(raw)
             if tel:
@@ -146,8 +166,13 @@ def _parse_address_section(heading_tag):
             if email:
                 data['email'] = email
 
-        if data['tel'] and data['email']:
-            break
+        # Special Instructions — le label est seul dans son div, valeur dans le div suivant
+        if raw.rstrip(':').strip() in ['Special Instructions', 'Instructions spéciales', 'Instructions particulières']:
+            next_div = elem.find_next_sibling('div')
+            if next_div:
+                val = next_div.get_text(' ', strip=True).replace('\xa0', ' ').strip()
+                if val:
+                    data['special_instructions'] = val
 
     return data
 
@@ -230,11 +255,10 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
             'delivery_date': None,
             'collection_address': None,
             'delivery_address': None,
-            'collection_address_full': {'name': None, 'address': None, 'tel': None, 'email': None},
-            'delivery_address_full': {'name': None, 'address': None, 'tel': None, 'email': None},
+            'collection_address_full': {'name': None, 'address': None, 'tel': None, 'email': None, 'special_instructions': None},
+            'delivery_address_full': {'name': None, 'address': None, 'tel': None, 'email': None, 'special_instructions': None},
             'status': None,
             'delivery_charge': None,
-            'special_instructions': None,
             'error': None
         }
 
@@ -396,28 +420,6 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
         if el:
             movement_data['delivery_charge'] = el.get('value', '').strip()
 
-        # ======================================================
-        # SPECIAL INSTRUCTIONS
-        # Structure FR: <div>Special Instructions:</div>
-        #               <div style="color: red;">TEXTE</div>
-        # Structure EN: idem ou <input id="SpecialInstructions">
-        # ======================================================
-        si_el = soup.find('input', {'id': 'SpecialInstructions'}) or soup.find('input', {'name': 'SpecialInstructions'})
-        if si_el:
-            movement_data['special_instructions'] = si_el.get('value', '').strip()
-        else:
-            # Chercher le div label puis prendre le div suivant
-            for div in soup.find_all('div'):
-                raw = div.get_text(' ', strip=True).replace('\xa0', ' ')
-                if raw.strip().rstrip(':') in ['Special Instructions', 'Instructions spéciales', 'Instructions particulières']:
-                    # Le contenu est dans le div suivant (souvent style="color: red;")
-                    next_div = div.find_next_sibling('div')
-                    if next_div:
-                        val = next_div.get_text(' ', strip=True).replace('\xa0', ' ').strip()
-                        if val:
-                            movement_data['special_instructions'] = val
-                    break
-
         if debug:
             print(f"  VIN:      {movement_data['vin']}")
             print(f"  Fuel:     {movement_data['fuel_type']}")
@@ -425,7 +427,6 @@ def get_mission_details(session, movement_id, country="france", headers=None, de
             print(f"  DelDate:  {movement_data['delivery_date']}")
             print(f"  CollAddr: {movement_data['collection_address_full']}")
             print(f"  DelAddr:  {movement_data['delivery_address_full']}")
-            print(f"  SpecInst: {movement_data['special_instructions']}")
 
         return movement_data
 
