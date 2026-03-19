@@ -84,74 +84,58 @@ def _extract_date_from_text(text):
 def _parse_address_section(heading_tag):
     """
     Parse une section adresse à partir de son h2 (FR ou EN).
-    Structure HTML observée (France) :
-      <h2>Adresse de la collecte</h2>
-      <hr>
-      <div>
-        <h4>(CODE) NOM AGENCE</h4>
-        <h4>CODE, VILLE, ADRESSE, CP, PAYS</h4>
-        <div>Numéro de téléphone.:&nbsp;+33 ...</div>
-        <div>N° de téléphone:&nbsp;06-...</div>
-        <div>Email:&nbsp;xxx@em.com</div>
-        ...
-        <div>Date prévue de collecte: DD/MM/YYYY</div>
-      </div>
-
-    Structure HTML observée (Allemagne) :
-      <h2>Collection Address</h2>
-      <div>
-        <h4>(CODE) NAME</h4>
-        <h4>ADDRESS LINE</h4>
-        ...
-      </div>
+    Structure réelle FR :
+      div.col-xs-12
+        h2 "Adresse de la collecte"
+        hr
+        div > h4 (nom), h4 (adresse)   ← premier div sibling
+        div "Numéro de téléphone.:&nbsp;..."
+        div "N° de téléphone:&nbsp;..."
+        div "Email:&nbsp;..."
+        div.alert ...
+        div "Date prévue de collecte: ..."
+        hr
+        div "Special Instructions:"     ← label seul
+        div style="color:red" "VALEUR"  ← valeur suivante
     """
     data = {'name': None, 'address': None, 'tel': None, 'email': None, 'special_instructions': None}
 
     if not heading_tag:
         return data
 
-    # Le div conteneur est le parent du h2 ou le sibling suivant
-    container = heading_tag.find_next('div')
-    if not container:
-        return data
+    # === NOM et ADRESSE : premier div sibling après le h2 ===
+    first_div = heading_tag.find_next_sibling('div')
+    if first_div:
+        h4s = first_div.find_all('h4')
+        if len(h4s) >= 1:
+            name_text = h4s[0].get_text().strip()
+            match = re.search(r'\(([^)]+)\)', name_text)
+            code = match.group(1) if match else ''
+            data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
+        if len(h4s) >= 2:
+            data['address'] = h4s[1].get_text().strip()
 
-    # === NOM et ADRESSE via h4 ===
-    h4s = container.find_all('h4')
-    if len(h4s) >= 1:
-        name_text = h4s[0].get_text().strip()
-        # Retirer le code entre parenthèses ex: "(F5D9) LAVAL" → "LAVAL"
-        match = re.search(r'\(([^)]+)\)', name_text)
-        code = match.group(1) if match else ''
-        data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
-    if len(h4s) >= 2:
-        data['address'] = h4s[1].get_text().strip()
+    # === Parcourir tous les div siblings directs du h2 ===
+    prev_was_special_label = False
 
-    # === TEL et EMAIL via les <div> du container ===
-    # &nbsp; est converti en \xa0 par BeautifulSoup — on normalise
-    # === TEL, EMAIL, SPECIAL INSTRUCTIONS ===
-    # Chercher dans tous les divs directs du parent du heading (siblings)
-    # ET dans le container interne — couvre les deux structures FR/EN
-    search_zones = []
-    if container:
-        search_zones.append(container)
-    # Aussi parcourir les siblings directs du heading (structure FR)
-    for sibling in heading_tag.find_all_next():
-        if sibling.name in ['h1', 'h2', 'h3'] and sibling != heading_tag:
+    for sibling in heading_tag.find_next_siblings():
+        # Stop au prochain heading de section
+        if sibling.name in ['h1', 'h2', 'h3']:
             break
-        search_zones.append(sibling)
 
-    seen = set()
-    for elem in search_zones:
-        eid = id(elem)
-        if eid in seen:
-            continue
-        seen.add(eid)
-
-        if elem.name != 'div':
+        if sibling.name != 'div':
+            prev_was_special_label = False
             continue
 
-        raw = elem.get_text(' ', strip=True).replace('\xa0', ' ').strip()
+        raw = sibling.get_text(' ', strip=True).replace('\xa0', ' ').strip()
         if not raw:
+            prev_was_special_label = False
+            continue
+
+        # Si le div précédent était le label "Special Instructions:"
+        if prev_was_special_label and not data['special_instructions']:
+            data['special_instructions'] = raw
+            prev_was_special_label = False
             continue
 
         # Tel
@@ -166,15 +150,16 @@ def _parse_address_section(heading_tag):
             if email:
                 data['email'] = email
 
-        # Special Instructions — le label est seul dans son div, valeur dans le div suivant
+        # Special Instructions label
         if raw.rstrip(':').strip() in ['Special Instructions', 'Instructions spéciales', 'Instructions particulières']:
-            next_div = elem.find_next_sibling('div')
-            if next_div:
-                val = next_div.get_text(' ', strip=True).replace('\xa0', ' ').strip()
-                if val:
-                    data['special_instructions'] = val
+            prev_was_special_label = True
+            continue
+
+        prev_was_special_label = False
 
     return data
+
+
 
 
 def _extract_date_field(soup, input_ids, label_keys):
