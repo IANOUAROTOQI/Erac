@@ -83,51 +83,71 @@ def _extract_date_from_text(text):
 
 def _parse_address_section(heading_tag):
     """
-    Parse une section adresse à partir de son heading (h2/h3).
-    Retourne dict {name, address, tel, email}.
-    Robuste FR/EN : cherche les données dans les éléments suivants jusqu'au prochain heading.
+    Parse une section adresse à partir de son h2 (FR ou EN).
+    Structure HTML observée (France) :
+      <h2>Adresse de la collecte</h2>
+      <hr>
+      <div>
+        <h4>(CODE) NOM AGENCE</h4>
+        <h4>CODE, VILLE, ADRESSE, CP, PAYS</h4>
+        <div>Numéro de téléphone.:&nbsp;+33 ...</div>
+        <div>N° de téléphone:&nbsp;06-...</div>
+        <div>Email:&nbsp;xxx@em.com</div>
+        ...
+        <div>Date prévue de collecte: DD/MM/YYYY</div>
+      </div>
+
+    Structure HTML observée (Allemagne) :
+      <h2>Collection Address</h2>
+      <div>
+        <h4>(CODE) NAME</h4>
+        <h4>ADDRESS LINE</h4>
+        ...
+      </div>
     """
     data = {'name': None, 'address': None, 'tel': None, 'email': None}
 
     if not heading_tag:
         return data
 
-    # Collecter tous les éléments jusqu'au prochain heading de même niveau ou supérieur
-    elements = []
-    for sibling in heading_tag.find_all_next():
-        if sibling.name in ['h1', 'h2', 'h3', 'h4'] and sibling != heading_tag:
-            break
-        elements.append(sibling)
+    # Le div conteneur est le parent du h2 ou le sibling suivant
+    container = heading_tag.find_next('div')
+    if not container:
+        return data
 
-    # Chercher h4 pour nom et adresse
-    h4s = [e for e in elements if e.name == 'h4']
+    # === NOM et ADRESSE via h4 ===
+    h4s = container.find_all('h4')
     if len(h4s) >= 1:
         name_text = h4s[0].get_text().strip()
+        # Retirer le code entre parenthèses ex: "(F5D9) LAVAL" → "LAVAL"
         match = re.search(r'\(([^)]+)\)', name_text)
         code = match.group(1) if match else ''
         data['name'] = name_text.replace(f'({code})', '').strip() if code else name_text
     if len(h4s) >= 2:
         data['address'] = h4s[1].get_text().strip()
 
-    # Chercher tel et email dans tous les textes de la section
-    full_text = '\n'.join(e.get_text(' ', strip=True) for e in elements if e.name not in ['script', 'style'])
-
-    for line in full_text.splitlines():
-        line = line.strip()
-        if not line:
+    # === TEL et EMAIL via les <div> du container ===
+    # &nbsp; est converti en \xa0 par BeautifulSoup — on normalise
+    for div in container.find_all('div', recursive=True):
+        # Ignorer les divs imbriqués profonds (alert etc.)
+        raw = div.get_text(' ', strip=True).replace('\xa0', ' ').strip()
+        if not raw:
             continue
 
-        # Tel — matcher les labels FR et EN
-        if any(k in line for k in KEYS['tel']):
-            tel = _extract_tel(line)
-            if tel and not data['tel']:
+        # Tel — prendre le premier numéro trouvé
+        if any(k in raw for k in KEYS['tel']) and not data['tel']:
+            tel = _extract_tel(raw)
+            if tel:
                 data['tel'] = tel
 
         # Email
-        if 'Email' in line or 'email' in line:
-            email = _extract_email(line)
-            if email and not data['email']:
+        if 'Email' in raw and not data['email']:
+            email = _extract_email(raw)
+            if email:
                 data['email'] = email
+
+        if data['tel'] and data['email']:
+            break
 
     return data
 
@@ -153,7 +173,15 @@ def _extract_date_field(soup, input_ids, label_keys):
                 if val:
                     return val
 
-    # 3. Recherche texte libre dans toute la page
+    # 3. Chercher dans les <div> contenant le label (FR/EN) — structure France
+    for div in soup.find_all('div'):
+        raw = div.get_text(' ', strip=True).replace('\xa0', ' ')
+        if any(k in raw for k in label_keys):
+            date = _extract_date_from_text(raw)
+            if date:
+                return date
+
+    # 4. Texte brut de toute la page (dernier recours)
     full_text = soup.get_text('\n')
     for line in full_text.splitlines():
         if any(k in line for k in label_keys):
